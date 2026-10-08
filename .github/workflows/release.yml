@@ -1,0 +1,27 @@
+name: Publish verified release assets
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions: {}
+
+concurrency:
+  group: public-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the tagged tree and publish its assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 release_tools/publish.py --execute
