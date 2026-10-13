@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a2amx"
+version = "0.0.0.dev0"
+description = "a2amx: agent-to-agent message exchange between the agents you already run, across vendors and apps. Placeholder release holding the name; the product's 0.0.0 follows."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "FSL-1.1-ALv2"
+license-files = ["LICENSE"]
+authors = [{ name = "PSQR" }]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/a2amx/a2amx-releases"
+
+[tool.setuptools]
+packages = ["a2amx"]

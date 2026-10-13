@@ -1,0 +1,57 @@
+name: Publish the placeholder to PyPI
+
+# PLACEHOLDER WORKFLOW. It publishes the name-holding package under placeholder/
+# through PyPI trusted publishing (no token, password or secret exists anywhere).
+# The release pipeline's own publish-pypi.yml replaces this file byte for byte
+# when the bootstrap files are committed here; until then this is the only use.
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: pypi-placeholder
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the placeholder sdist and wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          python -m build placeholder --outdir dist
+          (cd dist && sha256sum -- * && ls -1 | grep -qx 'a2amx-0.0.0.dev0-py3-none-any.whl')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish to PyPI by trusted publishing (no token stored)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: dist/
