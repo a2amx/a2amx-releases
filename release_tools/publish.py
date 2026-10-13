@@ -23,9 +23,12 @@ import urllib.request
 MAX_ASSET = 32 * 1024 * 1024
 MAX_JSON = 1024 * 1024
 MAX_TOTAL = 128 * 1024 * 1024
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.+-]*)\Z")
+TAG = re.compile(r"(?:(?P<distribution>[a-z][a-z0-9_]*)-)?v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.+-]*))\Z")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z")
 DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+REUSED_SNAPSHOT = "14f6ebccdc9ce94dbbf2cf5ff9f902617f8edbb7"
+REUSED_MANIFEST = "a5e9e3229bca8c6b1ce02a7bd21d559e26a587d98f37f13169ac6cd22846489f"
+REUSED_WHEEL = "3060c172a9d40ac555ee7773813c9d2220856753072628166e8a648316b1f2de"
 PAGES = {"README.md", "docs/INSTALL.md", "docs/FIRST_EXCHANGE.md",
          "docs/UPDATE_AND_UNINSTALL.md", "docs/SUPPORT.md"}
 
@@ -88,8 +91,11 @@ class Verified:
 
 
 def verify(root, tag):
-    if not isinstance(tag, str) or not TAG.fullmatch(tag):
+    match = TAG.fullmatch(tag) if isinstance(tag, str) else None
+    if match is None or match['distribution'] == 'quovisto':
         raise Refused("invalid_tag")
+    distribution = match['distribution'] or 'quovisto'
+    version = match['version']
     root = Path(root).absolute()
     assets = root / "assets" / tag
     sums = read(assets / "SHA256SUMS", MAX_JSON)
@@ -113,12 +119,15 @@ def verify(root, tag):
     if "RELEASE.json" not in blobs:
         raise Refused("release_record_missing")
     release = parse(blobs["RELEASE.json"])
-    shape(release, {"schema", "tag", "version", "status", "qualification", "omission_reason", "wheel", "pages"})
+    fields = {"schema", "tag", "version", "status", "qualification", "omission_reason", "wheel", "pages"}
+    if distribution != 'quovisto':
+        fields |= {'source_commit', 'snapshot_commit'}
+    shape(release, fields)
     if (type(release["schema"]) is not int or release["schema"] != 1 or release["tag"] != tag
-            or release["version"] != tag[1:] or release["status"] != "preview"):
+            or release["version"] != version or release["status"] != "preview"):
         raise Refused("release_identity")
     wheel = release["wheel"]
-    if not isinstance(wheel, str) or not NAME.fullmatch(wheel) or not wheel.startswith("quovisto-" + tag[1:] + "-") or not wheel.endswith(".whl"):
+    if not isinstance(wheel, str) or not NAME.fullmatch(wheel) or wheel != distribution + "-" + version + "-py3-none-any.whl":
         raise Refused("wheel_identity")
     expected = {wheel, "RELEASE.json", "RELEASE_NOTES.md", "SNAPSHOT_MANIFEST.json", "S1_BUILD.json", "WHEEL_SHA256SUMS"}
     if release["qualification"] == "included" and release["omission_reason"] is None:
@@ -135,18 +144,48 @@ def verify(root, tag):
             or build.get("wheel", {}).get("filename") != wheel
             or build["wheel"].get("size") != len(blobs[wheel])
             or build["wheel"].get("sha256") != hashes[wheel]
-            or build["wheel"].get("distribution") != "quovisto"
-            or build["wheel"].get("version") != tag[1:]):
+            or build["wheel"].get("distribution") != distribution
+            or build["wheel"].get("version") != version):
         raise Refused("build_binding")
     if blobs["WHEEL_SHA256SUMS"] != (hashes[wheel] + "  " + wheel + "\n").encode():
         raise Refused("wheel_only_checksums")
+    if distribution != 'quovisto':
+        snapshot = parse(blobs['SNAPSHOT_MANIFEST.json'])
+        if (distribution != 'a2amx' or version != '0.0.0' or release['qualification'] != 'included'
+                or not isinstance(release['source_commit'], str)
+                or not re.fullmatch('[a-f0-9]{40}', release['source_commit'])
+                or release['snapshot_commit'] != REUSED_SNAPSHOT
+                or build.get('snapshot_commit') != release['snapshot_commit']
+                or hashes['SNAPSHOT_MANIFEST.json'] != REUSED_MANIFEST
+                or not isinstance(snapshot, dict) or snapshot.get('tag') != 'v0.0.0'
+                or any(build.get(key) != snapshot.get(key) for key in ('commit', 'tree', 'internal_version'))):
+            raise Refused('reused_snapshot_binding')
     if "QUALIFICATION.json" in blobs:
         q = parse(blobs["QUALIFICATION.json"])
         if not isinstance(q, dict) or not isinstance(q.get("qualification"), dict):
             raise Refused("qualification_binding")
         binding = {"wheel_sha256": hashes[wheel], "build_record_sha256": hashes["S1_BUILD.json"],
                    "kit_source_sha256": build.get("snapshot_tree_sha256")}
-        if (q.get("schema") != "quovisto.release-qualification.v1" or q.get("binding") != binding
+        distribution_only = q.get('schema') == 'quovisto.distribution-qualification.v1'
+        if distribution != 'quovisto' and not distribution_only:
+            raise Refused('distribution_qualification_required')
+        if distribution_only:
+            differences = ['product_profile.json:distribution', 'METADATA:Name', 'RECORD', 'dist-info directory']
+            change = build.get('distribution_change') or {}
+            if (distribution != 'a2amx' or version != '0.0.0' or build.get('source_tag') != 'v0.0.0'
+                    or q['qualification'].get('kind') != 'distribution_only'
+                    or q['qualification'].get('installed_runtime') != 'not_run'
+                    or q['qualification'].get('comparison_scope') != 'member_contents'
+                    or q['qualification'].get('snapshot_commit') != release.get('snapshot_commit')
+                    or q['qualification'].get('permitted_differences') != differences
+                    or q['qualification'].get('all_other_member_bytes_equal') is not True
+                    or change.get('permitted_differences') != differences
+                    or change.get('all_other_member_bytes_equal') is not True
+                    or change.get('comparison_scope') != 'member_contents'
+                    or change.get('original_distribution') != 'quovisto'
+                    or change.get('original_wheel_sha256') != REUSED_WHEEL):
+                raise Refused('distribution_qualification_binding')
+        if ((q.get("schema") != "quovisto.release-qualification.v1" and not distribution_only) or q.get("binding") != binding
                 or q.get("qualification", {}).get("release_status") != "preview"
                 or q["qualification"].get("release_word_inferred") is not False):
             raise Refused("qualification_binding")

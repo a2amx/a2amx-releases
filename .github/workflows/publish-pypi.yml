@@ -1,57 +1,65 @@
-name: Publish the placeholder to PyPI
+name: Publish the release's wheel to PyPI
 
-# PLACEHOLDER WORKFLOW. It publishes the name-holding package under placeholder/
-# through PyPI trusted publishing (no token, password or secret exists anywhere).
-# The release pipeline's own publish-pypi.yml replaces this file byte for byte
-# when the bootstrap files are committed here; until then this is the only use.
+# Trusted publishing: PyPI accepts this workflow's OpenID Connect identity for
+# the environment below. No token, password or secret exists anywhere. A release
+# the pipeline publishes with the run's own token starts no workflow, so the
+# entry for such a release is a person's dispatch naming its tag.
 on:
-  workflow_dispatch: {}
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of a published release, a2amx-v<version>, carrying that version's a2amx wheel
+        required: true
+        type: string
 
 permissions: {}
 
+# One group per release: a repeat for the same tag waits; other releases never cancel it.
 concurrency:
-  group: pypi-placeholder
+  group: pypi-publish-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Build the placeholder sdist and wheel
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade build
-          python -m build placeholder --outdir dist
-          (cd dist && sha256sum -- * && ls -1 | grep -qx 'a2amx-0.0.0.dev0-py3-none-any.whl')
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-
   publish:
-    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-      - name: Publish to PyPI by trusted publishing (no token stored)
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+      - name: Download the release's wheel and check it against WHEEL_SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "::error::$1"; exit 1; }
+          case "$RELEASE_TAG" in
+            a2amx-v[0-9]*) ;;
+            *) refuse "release tag invalid" ;;
+          esac
+          version="${RELEASE_TAG#a2amx-v}"
+          case "$version" in
+            *[!A-Za-z0-9.+]*) refuse "release tag invalid" ;;
+          esac
+          [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false ] || refuse "release not published"
+          names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          wheel="$(printf '%s\n' "$names" | grep -E '^a2amx-[0-9][A-Za-z0-9.+]*-py3-none-any\.whl$' || true)"
+          [ "$wheel" = "a2amx-$version-py3-none-any.whl" ] || refuse "release must carry exactly one a2amx wheel, of its tag's version"
+          printf '%s\n' "$names" | grep -qx 'WHEEL_SHA256SUMS' || refuse "release carries no WHEEL_SHA256SUMS"
+          mkdir dist checksums
+          gh release download "$RELEASE_TAG" --pattern "$wheel" --dir dist
+          gh release download "$RELEASE_TAG" --pattern WHEEL_SHA256SUMS --dir checksums
+          [ "$(ls -A dist)" = "$wheel" ] || refuse "download is not exactly the wheel"
+          digest="$(shasum -a 256 "dist/$wheel" | cut -d' ' -f1)"
+          printf '%s  %s\n' "$digest" "$wheel" | cmp -s - checksums/WHEEL_SHA256SUMS || refuse "wheel does not match WHEEL_SHA256SUMS"
+          echo "checked $wheel sha256 $digest"
+      - name: Upload the checked wheel by trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          attestations: true
