@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag of a published release, a2amx-v<version>, carrying that version's a2amx wheel
+        description: Tag of a published release, v<version> or the historical a2amx-v0.0.0, carrying that version's a2amx wheel
         required: true
         type: string
 
@@ -39,10 +39,10 @@ jobs:
           set -euo pipefail
           refuse() { echo "::error::$1"; exit 1; }
           case "$RELEASE_TAG" in
-            a2amx-v[0-9]*) ;;
+            a2amx-v0.0.0) version="0.0.0" ;;
+            v[0-9]*) version="${RELEASE_TAG#v}" ;;
             *) refuse "release tag invalid" ;;
           esac
-          version="${RELEASE_TAG#a2amx-v}"
           case "$version" in
             *[!A-Za-z0-9.+]*) refuse "release tag invalid" ;;
           esac

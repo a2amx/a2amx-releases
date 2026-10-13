@@ -29,6 +29,7 @@ DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 REUSED_SNAPSHOT = "14f6ebccdc9ce94dbbf2cf5ff9f902617f8edbb7"
 REUSED_MANIFEST = "a5e9e3229bca8c6b1ce02a7bd21d559e26a587d98f37f13169ac6cd22846489f"
 REUSED_WHEEL = "3060c172a9d40ac555ee7773813c9d2220856753072628166e8a648316b1f2de"
+DEFAULT_DISTRIBUTION = "a2amx"  # R-1: this release-only tree contains no product profile.
 PAGES = {"README.md", "docs/INSTALL.md", "docs/FIRST_EXCHANGE.md",
          "docs/UPDATE_AND_UNINSTALL.md", "docs/SUPPORT.md"}
 
@@ -94,7 +95,12 @@ def verify(root, tag):
     match = TAG.fullmatch(tag) if isinstance(tag, str) else None
     if match is None or match['distribution'] == 'quovisto':
         raise Refused("invalid_tag")
-    distribution = match['distribution'] or 'quovisto'
+    reused = tag == 'a2amx-v0.0.0'
+    if match['distribution'] and not reused:
+        raise Refused('uncommissioned_snapshot_reuse')
+    # v0.0.0 is the original publication. All new ordinary previews use the
+    # renamed distribution; the prefixed 0.0.0 remains the sole sealed repack.
+    distribution = 'quovisto' if tag == 'v0.0.0' else DEFAULT_DISTRIBUTION
     version = match['version']
     root = Path(root).absolute()
     assets = root / "assets" / tag
@@ -120,7 +126,7 @@ def verify(root, tag):
         raise Refused("release_record_missing")
     release = parse(blobs["RELEASE.json"])
     fields = {"schema", "tag", "version", "status", "qualification", "omission_reason", "wheel", "pages"}
-    if distribution != 'quovisto':
+    if reused:
         fields |= {'source_commit', 'snapshot_commit'}
     shape(release, fields)
     if (type(release["schema"]) is not int or release["schema"] != 1 or release["tag"] != tag
@@ -149,7 +155,7 @@ def verify(root, tag):
         raise Refused("build_binding")
     if blobs["WHEEL_SHA256SUMS"] != (hashes[wheel] + "  " + wheel + "\n").encode():
         raise Refused("wheel_only_checksums")
-    if distribution != 'quovisto':
+    if reused:
         snapshot = parse(blobs['SNAPSHOT_MANIFEST.json'])
         if (distribution != 'a2amx' or version != '0.0.0' or release['qualification'] != 'included'
                 or not isinstance(release['source_commit'], str)
@@ -167,7 +173,7 @@ def verify(root, tag):
         binding = {"wheel_sha256": hashes[wheel], "build_record_sha256": hashes["S1_BUILD.json"],
                    "kit_source_sha256": build.get("snapshot_tree_sha256")}
         distribution_only = q.get('schema') == 'quovisto.distribution-qualification.v1'
-        if distribution != 'quovisto' and not distribution_only:
+        if reused and not distribution_only:
             raise Refused('distribution_qualification_required')
         if distribution_only:
             differences = ['product_profile.json:distribution', 'METADATA:Name', 'RECORD', 'dist-info directory']
